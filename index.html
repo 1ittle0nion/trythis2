@@ -1,0 +1,880 @@
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>本地德州扑克 (Pass & Play)</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #1a472a; color: #e5e7eb; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; touch-action: manipulation; }
+        .playing-card { width: 60px; height: 84px; border-radius: 6px; background: white; color: black; display: flex; flex-direction: column; justify-content: center; align-items: center; font-weight: bold; font-size: 1.25rem; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid #ccc; position: relative; }
+        .playing-card.red { color: #dc2626; }
+        .playing-card.black { color: #171717; }
+        .playing-card .corner { position: absolute; font-size: 0.8rem; display: flex; flex-direction: column; align-items: center; line-height: 1; }
+        .playing-card .corner.top-left { top: 4px; left: 4px; }
+        .playing-card .corner.bottom-right { bottom: 4px; right: 4px; transform: rotate(180deg); }
+        .playing-card.hidden-card { background: repeating-linear-gradient(45deg, #1e3a8a, #1e3a8a 10px, #1e40af 10px, #1e40af 20px); border: 2px solid white; }
+        
+        /* 响应式卡牌 */
+        @media (min-width: 640px) {
+            .playing-card { width: 80px; height: 112px; font-size: 1.5rem; }
+            .playing-card .corner { font-size: 1rem; }
+        }
+        
+        .fade-enter-active, .fade-leave-active { transition: opacity 0.3s ease; }
+        .fade-enter-from, .fade-leave-to { opacity: 0; }
+        
+        input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    </style>
+</head>
+<body>
+    <div id="app" class="min-h-screen flex flex-col relative pb-20">
+        
+        <!-- 页面 1：游戏设置 -->
+        <div v-if="currentScreen === 'setup'" class="max-w-2xl mx-auto p-4 w-full pt-10">
+            <h1 class="text-3xl font-bold text-center text-yellow-400 mb-8"><i class="fas fa-spade"></i> 本地德州扑克 <i class="fas fa-club"></i></h1>
+            
+            <div class="bg-gray-800 p-6 rounded-xl shadow-xl mb-6">
+                <h2 class="text-xl font-semibold mb-4 border-b border-gray-600 pb-2">游戏规则设置</h2>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">小盲注 (SB)</label>
+                        <input type="number" v-model.number="config.sb" class="w-full bg-gray-700 rounded p-2 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">大盲注 (BB)</label>
+                        <input type="number" v-model.number="config.bb" class="w-full bg-gray-700 rounded p-2 text-white">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">初始筹码</label>
+                        <input type="number" v-model.number="config.initialChips" class="w-full bg-gray-700 rounded p-2 text-white">
+                    </div>
+                    <div class="flex items-center mt-6">
+                        <input type="checkbox" id="rebuy" v-model="config.allowRebuy" class="w-5 h-5 mr-2">
+                        <label for="rebuy" class="text-sm">允许破产后补充筹码 (Rebuy)</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-gray-800 p-6 rounded-xl shadow-xl mb-6">
+                <div class="flex justify-between items-center mb-4 border-b border-gray-600 pb-2">
+                    <h2 class="text-xl font-semibold">玩家设置 ({{ playersSetup.length }}/6)</h2>
+                    <button @click="addPlayer" v-if="playersSetup.length < 6" class="text-sm bg-blue-600 hover:bg-blue-500 px-3 py-1 rounded text-white">+ 添加玩家</button>
+                </div>
+                
+                <div v-for="(p, index) in playersSetup" :key="index" class="flex gap-2 mb-3 items-center bg-gray-700 p-2 rounded">
+                    <span class="font-bold text-gray-400 w-6">{{ index + 1 }}.</span>
+                    <input type="text" v-model="p.name" placeholder="玩家昵称" class="flex-1 bg-gray-800 rounded p-2 text-white text-sm">
+                    <input type="password" v-model="p.pin" placeholder="设置 PIN (数字)" class="w-1/3 bg-gray-800 rounded p-2 text-white text-sm" maxlength="6" inputmode="numeric">
+                    <button @click="removePlayer(index)" v-if="playersSetup.length > 2" class="text-red-400 hover:text-red-300 px-2"><i class="fas fa-times"></i></button>
+                </div>
+            </div>
+
+            <button @click="startGame" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-4 rounded-xl text-xl shadow-lg transition transform hover:scale-105">
+                开始游戏
+            </button>
+        </div>
+
+        <!-- 页面 2：主游戏桌 -->
+        <div v-if="currentScreen === 'game'" class="flex-1 flex flex-col h-screen overflow-hidden">
+            <!-- 顶部：底池与公共牌 -->
+            <div class="bg-black/40 p-4 shadow-md z-10">
+                <div class="flex justify-between items-center mb-2">
+                    <div class="text-yellow-400 font-bold text-lg"><i class="fas fa-coins"></i> 底池: {{ currentPot }}</div>
+                    <div class="text-gray-300 font-semibold bg-gray-800 px-3 py-1 rounded-full text-sm">阶段: {{ stageName }}</div>
+                    <button @click="showStats = true" class="text-gray-300 hover:text-white"><i class="fas fa-chart-bar"></i> 统计</button>
+                </div>
+                
+                <!-- 公共牌展示 -->
+                <div class="flex justify-center gap-2 h-24 sm:h-32 items-center bg-green-900/30 rounded-xl p-2 border border-green-800/50">
+                    <template v-if="communityCards.length > 0">
+                        <div v-for="(card, i) in communityCards" :key="i" class="playing-card" :class="card.suit === '♥' || card.suit === '♦' ? 'red' : 'black'">
+                            <div class="corner top-left"><span>{{ card.rank }}</span><span>{{ card.suit }}</span></div>
+                            <div class="text-2xl sm:text-4xl">{{ card.suit }}</div>
+                            <div class="corner bottom-right"><span>{{ card.rank }}</span><span>{{ card.suit }}</span></div>
+                        </div>
+                    </template>
+                    <template v-else>
+                        <div class="text-gray-400 text-sm italic">等待翻牌...</div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- 中间：其他玩家状态 -->
+            <div class="flex-1 overflow-y-auto p-2 flex flex-wrap gap-2 justify-center content-start">
+                <div v-for="p in players" :key="p.id" 
+                     class="w-[48%] sm:w-[31%] bg-gray-800 rounded-lg p-3 border-2 transition-colors relative"
+                     :class="{
+                         'border-yellow-500 shadow-[0_0_15px_rgba(234,179,8,0.5)]': p.id === activePlayerId && turnState === 'unlocked',
+                         'border-gray-600': p.id !== activePlayerId || turnState !== 'unlocked',
+                         'opacity-50': p.status === 'folded' || p.status === 'out'
+                     }">
+                    
+                    <div class="flex justify-between items-start mb-1">
+                        <div class="font-bold truncate pr-1" :class="p.id === activePlayerId ? 'text-yellow-400' : 'text-white'">
+                            {{ p.name }}
+                            <span v-if="p.id === dealerId" class="text-xs bg-white text-black rounded-full px-1.5 ml-1">D</span>
+                        </div>
+                        <div class="text-green-400 text-sm font-mono">${{ p.chips }}</div>
+                    </div>
+                    
+                    <div class="text-xs text-gray-400 mb-2 h-4">
+                        <span v-if="p.status === 'folded'" class="text-red-400">已弃牌</span>
+                        <span v-else-if="p.status === 'all-in'" class="text-blue-400 font-bold">All-In!</span>
+                        <span v-else-if="p.currentBet > 0">本轮下注: <span class="text-yellow-200">${{ p.currentBet }}</span></span>
+                        <span v-else-if="p.status === 'active'">等待中</span>
+                        <span v-else-if="p.status === 'out'">淘汰</span>
+                    </div>
+
+                    <!-- 迷你卡背 -->
+                    <div class="flex gap-1 justify-center mt-2" v-if="p.status !== 'out' && p.status !== 'folded'">
+                        <div class="w-6 h-8 bg-blue-800 rounded border border-white flex items-center justify-center text-[8px] text-white overflow-hidden">
+                            <i class="fas fa-diamond"></i>
+                        </div>
+                        <div class="w-6 h-8 bg-blue-800 rounded border border-white flex items-center justify-center text-[8px] text-white overflow-hidden">
+                            <i class="fas fa-diamond"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 底部：当前操作区 (Pass & Play 核心) -->
+            <div class="bg-gray-900 border-t-4 border-gray-700 p-4 rounded-t-2xl shadow-[0_-10px_20px_rgba(0,0,0,0.5)] z-20">
+                <template v-if="activePlayer">
+                    
+                    <!-- 锁定状态：传递设备并输入PIN -->
+                    <div v-if="turnState === 'locked'" class="text-center py-6">
+                        <h3 class="text-2xl font-bold text-white mb-2">请将设备交给 <span class="text-yellow-400">{{ activePlayer.name }}</span></h3>
+                        <p class="text-gray-400 mb-6 text-sm">轮到你行动了，请输入 PIN 码解锁底牌</p>
+                        
+                        <div class="flex justify-center gap-2 max-w-xs mx-auto">
+                            <input type="password" v-model="inputPin" placeholder="PIN 码" class="w-2/3 bg-gray-800 border border-gray-600 rounded-lg p-3 text-center text-xl text-white tracking-widest" inputmode="numeric">
+                            <button @click="unlockTurn" class="w-1/3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-bold">解锁</button>
+                        </div>
+                        <p v-if="pinError" class="text-red-400 mt-2 text-sm">{{ pinError }}</p>
+                    </div>
+
+                    <!-- 解锁状态：展示底牌并提供操作 -->
+                    <div v-else-if="turnState === 'unlocked'" class="animate-fade-in">
+                        <div class="flex justify-between items-end mb-4">
+                            <div>
+                                <h3 class="text-xl font-bold text-yellow-400">{{ activePlayer.name }} 的回合</h3>
+                                <p class="text-sm text-gray-400">筹码: ${{ activePlayer.chips }} | 当前需跟注: ${{ amountToCall }}</p>
+                            </div>
+                            <!-- 查看底牌 -->
+                            <div class="flex gap-2">
+                                <div v-for="(card, i) in activePlayer.holeCards" :key="i" class="playing-card" :class="card.suit === '♥' || card.suit === '♦' ? 'red' : 'black'" style="transform: scale(0.8); transform-origin: bottom right; margin: -10px -5px;">
+                                    <div class="corner top-left"><span>{{ card.rank }}</span><span>{{ card.suit }}</span></div>
+                                    <div class="text-2xl">{{ card.suit }}</div>
+                                    <div class="corner bottom-right"><span>{{ card.rank }}</span><span>{{ card.suit }}</span></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 加注滑块/输入区 (如果选择了加注) -->
+                        <div v-if="showRaiseInput" class="mb-4 bg-gray-800 p-3 rounded-lg border border-gray-700 flex flex-col gap-2">
+                            <div class="flex justify-between text-sm text-gray-300">
+                                <span>加注总额: ${{ raiseAmount }}</span>
+                                <span>(需再投入: ${{ raiseAmount - activePlayer.currentBet }})</span>
+                            </div>
+                            <input type="range" v-model.number="raiseAmount" :min="minRaiseTotal" :max="activePlayer.chips + activePlayer.currentBet" class="w-full">
+                            <div class="flex justify-between mt-2 gap-2">
+                                <button @click="raiseAmount = minRaiseTotal" class="bg-gray-700 px-2 py-1 rounded text-xs">最小 ({{minRaiseTotal}})</button>
+                                <button @click="raiseAmount = Math.min(activePlayer.chips + activePlayer.currentBet, currentPot + amountToCall)" class="bg-gray-700 px-2 py-1 rounded text-xs">底池 ({{currentPot + amountToCall}})</button>
+                                <button @click="raiseAmount = activePlayer.chips + activePlayer.currentBet" class="bg-gray-700 px-2 py-1 rounded text-xs text-red-400 font-bold">All-In</button>
+                            </div>
+                            <div class="flex gap-2 mt-2">
+                                <button @click="showRaiseInput = false" class="flex-1 bg-gray-600 py-2 rounded font-bold">取消</button>
+                                <button @click="confirmRaise" class="flex-1 bg-red-600 py-2 rounded font-bold">确认加注</button>
+                            </div>
+                        </div>
+
+                        <!-- 操作按钮组 -->
+                        <div v-else class="grid grid-cols-4 gap-2">
+                            <button @click="handleAction('fold')" class="bg-gray-700 hover:bg-gray-600 text-white rounded-lg py-3 font-bold flex flex-col items-center justify-center">
+                                <i class="fas fa-times mb-1"></i> 弃牌
+                            </button>
+                            
+                            <button v-if="amountToCall === 0" @click="handleAction('check')" class="bg-blue-600 hover:bg-blue-500 text-white rounded-lg py-3 font-bold flex flex-col items-center justify-center">
+                                <i class="fas fa-check mb-1"></i> 过牌
+                            </button>
+                            
+                            <button v-else @click="handleAction('call')" class="bg-blue-600 hover:bg-blue-500 text-white rounded-lg py-3 font-bold flex flex-col items-center justify-center relative overflow-hidden" :disabled="activePlayer.chips === 0">
+                                <i class="fas fa-equals mb-1"></i> 
+                                <span v-if="activePlayer.chips <= amountToCall">全下跟注</span>
+                                <span v-else>跟注 ${{ amountToCall }}</span>
+                            </button>
+
+                            <button @click="showRaiseInput = true" class="bg-yellow-600 hover:bg-yellow-500 text-white rounded-lg py-3 font-bold flex flex-col items-center justify-center col-span-2" :disabled="activePlayer.chips <= amountToCall">
+                                <i class="fas fa-arrow-up mb-1"></i> 加注
+                            </button>
+                        </div>
+                    </div>
+                </template>
+                <div v-else class="text-center py-4 text-gray-400">
+                    发牌中 / 处理中...
+                </div>
+            </div>
+        </div>
+
+        <!-- 页面 3：单局结算 (Showdown) -->
+        <div v-if="currentScreen === 'showdown'" class="absolute inset-0 bg-black/95 z-50 flex flex-col p-4 overflow-y-auto">
+            <h2 class="text-3xl font-bold text-center text-yellow-400 mt-6 mb-2">本局结算</h2>
+            <div class="text-center text-gray-300 mb-6">底池总额: <span class="text-white font-bold text-xl">${{ lastPot }}</span></div>
+            
+            <div class="flex justify-center gap-2 mb-6 transform scale-75 sm:scale-100">
+                <div v-for="(card, i) in communityCards" :key="i" class="playing-card" :class="card.suit === '♥' || card.suit === '♦' ? 'red' : 'black'">
+                    <div class="corner top-left"><span>{{ card.rank }}</span><span>{{ card.suit }}</span></div>
+                    <div class="text-2xl">{{ card.suit }}</div>
+                    <div class="corner bottom-right"><span>{{ card.rank }}</span><span>{{ card.suit }}</span></div>
+                </div>
+            </div>
+
+            <div class="flex-1">
+                <div v-for="res in showdownResults" :key="res.player.id" class="bg-gray-800 rounded-xl p-4 mb-3 border-l-4" :class="res.isWinner ? 'border-yellow-400' : 'border-gray-600'">
+                    <div class="flex justify-between items-center mb-2">
+                        <div class="font-bold text-lg" :class="res.isWinner ? 'text-yellow-400' : 'text-white'">
+                            <i v-if="res.isWinner" class="fas fa-trophy mr-1"></i>{{ res.player.name }}
+                            <span v-if="res.winAmount > 0" class="text-green-400 text-sm ml-2">+${{ res.winAmount }}</span>
+                        </div>
+                        <div class="text-sm text-gray-400">{{ res.handName }}</div>
+                    </div>
+                    
+                    <div class="flex gap-2" v-if="res.player.status !== 'folded'">
+                        <div v-for="(card, i) in res.player.holeCards" :key="i" class="playing-card" :class="card.suit === '♥' || card.suit === '♦' ? 'red' : 'black'" style="width: 40px; height: 56px; font-size: 1rem;">
+                            <div class="text-lg">{{ card.suit }}</div>
+                        </div>
+                        <div class="text-xs text-gray-400 ml-2 self-center flex-1">
+                            <span v-if="res.player.status === 'folded'">已弃牌</span>
+                            <span v-else>最佳5张: {{ formatBestCards(res.bestCards) }}</span>
+                        </div>
+                    </div>
+                    <div v-else class="text-sm text-gray-500 italic">已弃牌，未亮牌</div>
+                </div>
+            </div>
+            
+            <button @click="checkRebuysAndNextHand" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold py-4 rounded-xl text-xl mt-4">
+                准备下一局
+            </button>
+        </div>
+
+        <!-- 模态框：破产提示与 Rebuy -->
+        <div v-if="showRebuyModal" class="absolute inset-0 bg-black/80 z-[60] flex items-center justify-center p-4">
+            <div class="bg-gray-800 p-6 rounded-xl shadow-2xl w-full max-w-md text-center">
+                <i class="fas fa-skull-crossbones text-5xl text-red-500 mb-4"></i>
+                <h3 class="text-2xl font-bold text-white mb-2">{{ currentRebuyPlayer.name }} 筹码耗尽</h3>
+                <p class="text-gray-400 mb-6">您当前的筹码为 0。</p>
+                
+                <div v-if="config.allowRebuy" class="space-y-3">
+                    <button @click="processRebuy(true)" class="w-full bg-green-600 hover:bg-green-500 py-3 rounded-lg font-bold text-white text-lg">
+                        补充初始筹码 (${{ config.initialChips }})
+                    </button>
+                    <button @click="processRebuy(false)" class="w-full bg-gray-600 hover:bg-gray-500 py-3 rounded-lg font-bold text-white">
+                        结束游戏 (出局)
+                    </button>
+                </div>
+                <div v-else>
+                    <p class="text-yellow-400 mb-6">本局未开启 Rebuy，您已出局。</p>
+                    <button @click="processRebuy(false)" class="w-full bg-gray-600 hover:bg-gray-500 py-3 rounded-lg font-bold text-white">
+                        确认
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 全局统计与退出面板 -->
+        <div v-if="showStats" class="absolute inset-0 bg-black/90 z-[70] flex flex-col p-6">
+            <div class="flex justify-between items-center mb-6 border-b border-gray-700 pb-4">
+                <h2 class="text-2xl font-bold text-white">整场统计数据</h2>
+                <button @click="showStats = false" class="text-gray-400 hover:text-white text-3xl">&times;</button>
+            </div>
+            
+            <div class="flex-1 overflow-y-auto">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="text-gray-400 text-sm border-b border-gray-700">
+                            <th class="pb-2">玩家</th>
+                            <th class="pb-2 text-right">当前筹码</th>
+                            <th class="pb-2 text-right">总买入(次)</th>
+                            <th class="pb-2 text-right">净盈亏</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr v-for="p in players" :key="p.id" class="border-b border-gray-800">
+                            <td class="py-3 font-bold" :class="p.status === 'out' ? 'text-gray-500 line-through' : 'text-white'">{{ p.name }}</td>
+                            <td class="py-3 text-right font-mono">${{ p.chips }}</td>
+                            <td class="py-3 text-right text-gray-400">${{ p.totalBuyIn }} ({{p.rebuys}})</td>
+                            <td class="py-3 text-right font-bold font-mono" :class="p.chips - p.totalBuyIn >= 0 ? 'text-green-400' : 'text-red-400'">
+                                {{ p.chips - p.totalBuyIn >= 0 ? '+' : '' }}{{ p.chips - p.totalBuyIn }}
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <button @click="endFullGame" class="w-full bg-red-800 hover:bg-red-700 text-white font-bold py-4 rounded-xl text-lg mt-4 shadow-lg border border-red-600">
+                结束整场游戏并返回设置
+            </button>
+        </div>
+
+    </div>
+
+    <script>
+        const { createApp, ref, computed, reactive, watch } = Vue;
+
+        // 扑克牌数据
+        const SUITS = ['♠', '♥', '♦', '♣'];
+        const RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', 'T', 'J', 'Q', 'K', 'A'];
+        const RANK_VALUES = { '2':2, '3':3, '4':4, '5':5, '6':6, '7':7, '8':8, '9':9, 'T':10, 'J':11, 'Q':12, 'K':13, 'A':14 };
+
+        createApp({
+            setup() {
+                // UI 状态
+                const currentScreen = ref('setup'); // setup, game, showdown
+                const showStats = ref(false);
+                const turnState = ref('locked'); // locked, unlocked (用于传递隐藏底牌)
+                const inputPin = ref('');
+                const pinError = ref('');
+                const showRaiseInput = ref(false);
+                const raiseAmount = ref(0);
+
+                // 配置状态
+                const config = reactive({
+                    sb: 10,
+                    bb: 20,
+                    initialChips: 1000,
+                    allowRebuy: true
+                });
+
+                // 玩家预设
+                const playersSetup = reactive([
+                    { name: 'Player 1', pin: '' },
+                    { name: 'Player 2', pin: '' }
+                ]);
+
+                // 游戏核心状态
+                const players = ref([]);
+                const deck = ref([]);
+                const communityCards = ref([]);
+                const currentPot = ref(0);
+                const lastPot = ref(0); // 用于showdown展示
+                const highestBet = ref(0);
+                
+                const dealerIndex = ref(0);
+                const activePlayerIndex = ref(-1);
+                const lastRaiserIndex = ref(-1); // 用于判断一轮下注结束
+                const stage = ref('preflop'); // preflop, flop, turn, river, showdown
+                
+                // Rebuy 流程控制
+                const showRebuyModal = ref(false);
+                const rebuyQueue = ref([]);
+                const currentRebuyPlayer = ref(null);
+
+                // 计算属性
+                const activePlayer = computed(() => activePlayerIndex.value >= 0 ? players.value[activePlayerIndex.value] : null);
+                const activePlayerId = computed(() => activePlayer.value ? activePlayer.value.id : null);
+                const dealerId = computed(() => players.value.length > 0 ? players.value[dealerIndex.value].id : null);
+                
+                const amountToCall = computed(() => {
+                    if (!activePlayer.value) return 0;
+                    return highestBet.value - activePlayer.value.currentBet;
+                });
+
+                const minRaiseTotal = computed(() => {
+                    // 简化规则：最低加注总额 = 当前最高下注 + 大盲注，或者全下
+                    return highestBet.value + config.bb;
+                });
+
+                const stageName = computed(() => {
+                    const map = { 'preflop': '翻牌前', 'flop': '翻牌圈', 'turn': '转牌圈', 'river': '河牌圈' };
+                    return map[stage.value] || stage.value;
+                });
+
+                const showdownResults = ref([]);
+
+                // --- 基础函数 ---
+                const addPlayer = () => {
+                    if (playersSetup.length < 6) {
+                        playersSetup.push({ name: `Player ${playersSetup.length + 1}`, pin: '' });
+                    }
+                };
+                const removePlayer = (idx) => {
+                    playersSetup.splice(idx, 1);
+                };
+
+                const startGame = () => {
+                    // 验证
+                    for(let i=0; i<playersSetup.length; i++) {
+                        if(!playersSetup[i].name || !playersSetup[i].pin) {
+                            alert(`请为玩家 ${i+1} 设置昵称和PIN码！`);
+                            return;
+                        }
+                    }
+                    
+                    players.value = playersSetup.map((p, i) => ({
+                        id: `p${i}`,
+                        name: p.name,
+                        pin: p.pin,
+                        chips: config.initialChips,
+                        totalBuyIn: config.initialChips,
+                        rebuys: 0,
+                        holeCards: [],
+                        status: 'active', // active, folded, all-in, out
+                        currentBet: 0
+                    }));
+
+                    dealerIndex.value = Math.floor(Math.random() * players.value.length);
+                    currentScreen.value = 'game';
+                    startNewHand();
+                };
+
+                const createDeck = () => {
+                    let d = [];
+                    for (let s of SUITS) {
+                        for (let r of RANKS) {
+                            d.push({ suit: s, rank: r, value: RANK_VALUES[r] });
+                        }
+                    }
+                    // Fisher-Yates Shuffle
+                    for (let i = d.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [d[i], d[j]] = [d[j], d[i]];
+                    }
+                    deck.value = d;
+                };
+
+                const getNextActivePlayerIndex = (startIndex) => {
+                    let count = 0;
+                    let idx = startIndex;
+                    while (count < players.value.length) {
+                        if (players.value[idx].status === 'active') return idx;
+                        idx = (idx + 1) % players.value.length;
+                        count++;
+                    }
+                    return -1;
+                };
+
+                // --- 游戏流程 ---
+                const startNewHand = () => {
+                    createDeck();
+                    communityCards.value = [];
+                    currentPot.value = 0;
+                    highestBet.value = 0;
+                    stage.value = 'preflop';
+                    showdownResults.value = [];
+                    showStats.value = false;
+
+                    // 清理玩家状态
+                    let activeCount = 0;
+                    players.value.forEach(p => {
+                        if (p.chips > 0) {
+                            p.status = 'active';
+                            p.holeCards = [deck.value.pop(), deck.value.pop()];
+                            activeCount++;
+                        } else {
+                            p.status = 'out';
+                            p.holeCards = [];
+                        }
+                        p.currentBet = 0;
+                    });
+
+                    if (activeCount < 2) {
+                        alert("活跃玩家不足，游戏结束。");
+                        showStats.value = true;
+                        return;
+                    }
+
+                    // 移动庄家位
+                    dealerIndex.value = (dealerIndex.value + 1) % players.value.length;
+                    while(players.value[dealerIndex.value].status === 'out') {
+                        dealerIndex.value = (dealerIndex.value + 1) % players.value.length;
+                    }
+
+                    // 下盲注
+                    let sbIdx = getNextActivePlayerIndex((dealerIndex.value + 1) % players.value.length);
+                    let bbIdx = getNextActivePlayerIndex((sbIdx + 1) % players.value.length);
+
+                    // 两人局特殊规则：庄家是小盲
+                    if (activeCount === 2) {
+                        sbIdx = dealerIndex.value;
+                        bbIdx = getNextActivePlayerIndex((sbIdx + 1) % players.value.length);
+                    }
+
+                    forceBet(sbIdx, Math.min(config.sb, players.value[sbIdx].chips));
+                    forceBet(bbIdx, Math.min(config.bb, players.value[bbIdx].chips));
+                    
+                    highestBet.value = config.bb;
+
+                    // 行动从大盲后一位开始
+                    activePlayerIndex.value = getNextActivePlayerIndex((bbIdx + 1) % players.value.length);
+                    lastRaiserIndex.value = bbIdx; // 一轮结束标志：直到大盲位都没人加注
+
+                    lockForNextPlayer();
+                };
+
+                const forceBet = (idx, amount) => {
+                    players.value[idx].chips -= amount;
+                    players.value[idx].currentBet += amount;
+                    currentPot.value += amount;
+                    if (players.value[idx].chips === 0) {
+                        players.value[idx].status = 'all-in';
+                    }
+                };
+
+                const lockForNextPlayer = () => {
+                    turnState.value = 'locked';
+                    inputPin.value = '';
+                    pinError.value = '';
+                    showRaiseInput.value = false;
+                };
+
+                const unlockTurn = () => {
+                    if (inputPin.value === activePlayer.value.pin) {
+                        turnState.value = 'unlocked';
+                    } else {
+                        pinError.value = 'PIN码错误！';
+                    }
+                };
+
+                // --- 玩家操作处理 ---
+                const handleAction = (type) => {
+                    let p = activePlayer.value;
+                    let betAmount = 0;
+
+                    if (type === 'fold') {
+                        p.status = 'folded';
+                    } else if (type === 'check') {
+                        // 必须 requiredCall === 0 才能 check，UI已限制
+                    } else if (type === 'call') {
+                        let toCall = highestBet.value - p.currentBet;
+                        betAmount = Math.min(toCall, p.chips);
+                    } else if (type === 'raise' || type === 'all-in') {
+                        // type 来自 confirmRaise
+                        betAmount = raiseAmount.value - p.currentBet;
+                        if(raiseAmount.value > highestBet.value) {
+                            highestBet.value = raiseAmount.value;
+                            lastRaiserIndex.value = activePlayerIndex.value; // 更新最后加注者
+                        }
+                    }
+
+                    if (betAmount > 0) {
+                        p.chips -= betAmount;
+                        p.currentBet += betAmount;
+                        currentPot.value += betAmount;
+                        if (p.chips === 0) {
+                            p.status = 'all-in';
+                        }
+                    }
+
+                    moveToNextState();
+                };
+
+                const confirmRaise = () => {
+                    let p = activePlayer.value;
+                    if (raiseAmount.value < minRaiseTotal.value && raiseAmount.value < p.chips + p.currentBet) {
+                        alert(`加注总额不能低于 ${minRaiseTotal.value}`);
+                        return;
+                    }
+                    handleAction(raiseAmount.value >= p.chips + p.currentBet ? 'all-in' : 'raise');
+                };
+
+                const countActiveNonAllin = () => players.value.filter(p => p.status === 'active').length;
+                const countNotFolded = () => players.value.filter(p => p.status !== 'folded' && p.status !== 'out').length;
+
+                const moveToNextState = () => {
+                    let notFolded = countNotFolded();
+                    if (notFolded === 1) {
+                        // 其他人全弃牌，直接赢
+                        doShowdown(true);
+                        return;
+                    }
+
+                    let nextIdx = (activePlayerIndex.value + 1) % players.value.length;
+                    
+                    // 寻找下一个可行动的玩家（必须是 active）
+                    while (nextIdx !== activePlayerIndex.value) {
+                        if (players.value[nextIdx].status === 'active') {
+                            // 检查这轮是否结束
+                            if (nextIdx === lastRaiserIndex.value) {
+                                // 已经绕了一圈没有人再加注 -> 进入下一阶段
+                                nextStage();
+                                return;
+                            }
+                            // 否则轮到他
+                            activePlayerIndex.value = nextIdx;
+                            lockForNextPlayer();
+                            return;
+                        }
+                        
+                        // 如果跳过的是all-in或folded，且他是lastRaiser，理论上应该结束这轮
+                        if (nextIdx === lastRaiserIndex.value) {
+                            nextStage();
+                            return;
+                        }
+                        
+                        nextIdx = (nextIdx + 1) % players.value.length;
+                    }
+
+                    // 如果循环一圈没找到 active (所有人要么 fold 要么 all-in，或者只有一个人 active)，直接发完牌并结算
+                    fastForwardShowdown();
+                };
+
+                const nextStage = () => {
+                    // 重置本轮下注
+                    players.value.forEach(p => p.currentBet = 0);
+                    highestBet.value = 0;
+
+                    let activeCount = countActiveNonAllin();
+                    let notFolded = countNotFolded();
+
+                    if (notFolded <= 1 || (activeCount <= 1 && notFolded > 1)) {
+                        // 没有足够的玩家可以继续下注(多人都all-in了)，直接快进
+                        fastForwardShowdown();
+                        return;
+                    }
+
+                    if (stage.value === 'preflop') {
+                        stage.value = 'flop';
+                        communityCards.value.push(deck.value.pop(), deck.value.pop(), deck.value.pop());
+                    } else if (stage.value === 'flop') {
+                        stage.value = 'turn';
+                        communityCards.value.push(deck.value.pop());
+                    } else if (stage.value === 'turn') {
+                        stage.value = 'river';
+                        communityCards.value.push(deck.value.pop());
+                    } else if (stage.value === 'river') {
+                        doShowdown(false);
+                        return;
+                    }
+
+                    // 新阶段，从庄家左边第一个 active 玩家开始
+                    activePlayerIndex.value = getNextActivePlayerIndex((dealerIndex.value + 1) % players.value.length);
+                    lastRaiserIndex.value = activePlayerIndex.value;
+                    lockForNextPlayer();
+                };
+
+                const fastForwardShowdown = () => {
+                    // 补齐公共牌直到5张
+                    while (communityCards.value.length < 5) {
+                        communityCards.value.push(deck.value.pop());
+                    }
+                    doShowdown(false);
+                };
+
+                // --- 牌型判定逻辑 (简易版 7选5 核心) ---
+                const getHandRank = (cards7) => {
+                    // rank: 1(高牌) - 9(同花顺)
+                    // cards7 是 7 张卡牌对象数组
+                    let combinations = getCombinations(cards7, 5);
+                    let bestScore = -1;
+                    let bestData = null;
+
+                    combinations.forEach(combo => {
+                        let data = evaluate5Cards(combo);
+                        let score = calculateScore(data);
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestData = data;
+                        }
+                    });
+                    return { ...bestData, score: bestScore };
+                };
+
+                const getCombinations = (arr, size) => {
+                    let result = [];
+                    const f = (prefix, arr) => {
+                        if (prefix.length === size) {
+                            result.push(prefix);
+                            return;
+                        }
+                        for (let i = 0; i < arr.length; i++) {
+                            f(prefix.concat(arr[i]), arr.slice(i + 1));
+                        }
+                    }
+                    f([], arr);
+                    return result;
+                };
+
+                const evaluate5Cards = (cards) => {
+                    // 按 value 降序
+                    cards.sort((a, b) => b.value - a.value);
+                    let isFlush = cards.every(c => c.suit === cards[0].suit);
+                    
+                    let isStraight = false;
+                    let values = cards.map(c => c.value);
+                    if (values[0] - values[4] === 4 && new Set(values).size === 5) isStraight = true;
+                    // 特殊顺子 A-2-3-4-5
+                    if (values.join(',') === '14,5,4,3,2') {
+                        isStraight = true;
+                        values = [5,4,3,2,1]; // 重置顺序值以便比较
+                        // 重新排列卡片把A放最后
+                        let aCard = cards.shift();
+                        cards.push(aCard);
+                    }
+
+                    // 统计频次
+                    let counts = {};
+                    values.forEach(v => counts[v] = (counts[v] || 0) + 1);
+                    let freqs = Object.entries(counts).map(([val, cnt]) => ({ val: parseInt(val), cnt })).sort((a, b) => {
+                        if (a.cnt !== b.cnt) return b.cnt - a.cnt;
+                        return b.val - a.val;
+                    });
+
+                    let rank = 1, name = "高牌";
+                    let tiebreakers = []; // 用于打破平局的值序列
+
+                    if (isFlush && isStraight) { rank = 9; name = "同花顺"; tiebreakers = [values[0]]; }
+                    else if (freqs[0].cnt === 4) { rank = 8; name = "四条"; tiebreakers = [freqs[0].val, freqs[1].val]; }
+                    else if (freqs[0].cnt === 3 && freqs[1].cnt === 2) { rank = 7; name = "葫芦"; tiebreakers = [freqs[0].val, freqs[1].val]; }
+                    else if (isFlush) { rank = 6; name = "同花"; tiebreakers = values; }
+                    else if (isStraight) { rank = 5; name = "顺子"; tiebreakers = [values[0]]; }
+                    else if (freqs[0].cnt === 3) { rank = 4; name = "三条"; tiebreakers = [freqs[0].val, freqs[1].val, freqs[2].val]; }
+                    else if (freqs[0].cnt === 2 && freqs[1].cnt === 2) { rank = 3; name = "两对"; tiebreakers = [freqs[0].val, freqs[1].val, freqs[2].val]; }
+                    else if (freqs[0].cnt === 2) { rank = 2; name = "一对"; tiebreakers = [freqs[0].val, freqs[1].val, freqs[2].val, freqs[3].val]; }
+                    else { rank = 1; name = "高牌"; tiebreakers = values; }
+
+                    return { rank, name, tiebreakers, cards };
+                };
+
+                const calculateScore = (data) => {
+                    // 把 rank 和 tiebreakers 压缩成一个巨大的数字用于排序
+                    // rank 占 10^10, 随后每张牌占 10^8, 10^6...
+                    let score = data.rank * 10000000000;
+                    for (let i = 0; i < data.tiebreakers.length; i++) {
+                        score += data.tiebreakers[i] * Math.pow(100, 4 - i);
+                    }
+                    return score;
+                };
+
+                const formatBestCards = (cards) => {
+                    if(!cards) return '';
+                    return cards.map(c => c.suit + c.rank).join(' ');
+                };
+
+                // --- 结算与分配 ---
+                const doShowdown = (isFoldWin) => {
+                    stage.value = 'showdown';
+                    currentScreen.value = 'showdown';
+                    lastPot.value = currentPot.value;
+
+                    let inPlayers = players.value.filter(p => p.status !== 'folded' && p.status !== 'out');
+                    
+                    let results = [];
+
+                    if (isFoldWin && inPlayers.length === 1) {
+                        // 所有人弃牌
+                        let winner = inPlayers[0];
+                        winner.chips += currentPot.value;
+                        results.push({
+                            player: winner,
+                            isWinner: true,
+                            handName: "对手弃牌",
+                            bestCards: null,
+                            winAmount: currentPot.value
+                        });
+                        // 补充弃牌者信息用于展示
+                        players.value.forEach(p => {
+                            if(p.id !== winner.id && p.status !== 'out') {
+                                results.push({ player: p, isWinner: false, handName: "弃牌", winAmount: 0 });
+                            }
+                        });
+                    } else {
+                        // 比牌
+                        inPlayers.forEach(p => {
+                            let cards7 = [...p.holeCards, ...communityCards.value];
+                            let handData = getHandRank(cards7);
+                            p._handData = handData;
+                        });
+
+                        inPlayers.sort((a, b) => b._handData.score - a._handData.score);
+
+                        // 简单的赢家通吃主池分配（复杂边池逻辑按题意由于单文件可作简化处理，我们这里实现基础平分）
+                        let highestScore = inPlayers[0]._handData.score;
+                        let winners = inPlayers.filter(p => p._handData.score === highestScore);
+                        
+                        let winAmount = Math.floor(currentPot.value / winners.length);
+                        let remainder = currentPot.value % winners.length;
+
+                        // 更新玩家状态和生成结果
+                        winners.forEach((w, idx) => {
+                            let amount = winAmount + (idx === 0 ? remainder : 0); // 零头给第一个人
+                            w.chips += amount;
+                        });
+
+                        inPlayers.forEach(p => {
+                            let isWin = p._handData.score === highestScore;
+                            results.push({
+                                player: p,
+                                isWinner: isWin,
+                                handName: p._handData.name,
+                                bestCards: p._handData.cards,
+                                winAmount: isWin ? (winAmount + (results.length===0?remainder:0)) : 0
+                            });
+                        });
+                        
+                        // 补充弃牌者
+                        players.value.forEach(p => {
+                            if(p.status === 'folded') {
+                                results.push({ player: p, isWinner: false, handName: "弃牌", winAmount: 0 });
+                            }
+                        });
+                    }
+
+                    showdownResults.value = results;
+                    currentPot.value = 0;
+                };
+
+                // --- Rebuy 逻辑 ---
+                const checkRebuysAndNextHand = () => {
+                    rebuyQueue.value = players.value.filter(p => p.chips === 0 && p.status !== 'out');
+                    processNextRebuy();
+                };
+
+                const processNextRebuy = () => {
+                    if (rebuyQueue.value.length > 0) {
+                        currentRebuyPlayer.value = rebuyQueue.value.shift();
+                        showRebuyModal.value = true;
+                    } else {
+                        startNewHand();
+                    }
+                };
+
+                const processRebuy = (accept) => {
+                    if (accept && config.allowRebuy) {
+                        currentRebuyPlayer.value.chips = config.initialChips;
+                        currentRebuyPlayer.value.totalBuyIn += config.initialChips;
+                        currentRebuyPlayer.value.rebuys++;
+                        currentRebuyPlayer.value.status = 'active';
+                    } else {
+                        currentRebuyPlayer.value.status = 'out';
+                    }
+                    showRebuyModal.value = false;
+                    processNextRebuy();
+                };
+
+                const endFullGame = () => {
+                    if(confirm("确定要结束整场游戏并返回设置页面吗？")) {
+                        currentScreen.value = 'setup';
+                        showStats.value = false;
+                        players.value = [];
+                    }
+                };
+
+                return {
+                    currentScreen, showStats, turnState, inputPin, pinError, showRaiseInput, raiseAmount,
+                    config, playersSetup, players, communityCards, currentPot, lastPot, stageName,
+                    activePlayer, activePlayerId, dealerId, amountToCall, minRaiseTotal, showdownResults,
+                    showRebuyModal, currentRebuyPlayer,
+                    addPlayer, removePlayer, startGame, unlockTurn, handleAction, confirmRaise,
+                    formatBestCards, checkRebuysAndNextHand, processRebuy, endFullGame
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
+
+```
