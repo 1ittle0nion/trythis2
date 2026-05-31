@@ -347,6 +347,8 @@ function render(){
   const grid=$('seats'); grid.innerHTML='';
   for(let i=0;i<MAX_SEATS;i++){
     const p=players[i];
+    // 对局进行中：隐藏无人入座的空位，只显示在玩的人
+    if(playing && !p) continue;
     const seat=document.createElement('div');
     const gp = playing && g.seats && g.seats[i];
     const acting = playing && g.toAct===i && g.stage!=='showdown';
