@@ -467,6 +467,15 @@ function renderActionBar(players,g,mySeat,playing){
   if(maxTotal>g.currentBet){
     if(maxTotal>minTotal){
       const inp=document.createElement('input'); inp.type='number'; inp.value=minTotal; inp.min=minTotal; inp.max=maxTotal; inp.id='raiseval'; ra.appendChild(inp);
+      // 快捷键：把加注框设为某个"加注后总额"，并夹在 [minTotal, maxTotal] 内
+      const toCall=Math.max(0,g.currentBet-me.bet);
+      const setTo=v=>{ $('raiseval').value=Math.max(minTotal,Math.min(maxTotal,Math.round(v))); };
+      const quick=(label,total)=>{ const clamped=Math.max(minTotal,Math.min(maxTotal,Math.round(total))); if(clamped<=minTotal&&label!=='最小')return; const b=document.createElement('button'); b.className='neutral'; b.textContent=label; b.onclick=()=>setTo(total); ra.appendChild(b); };
+      quick('最小',minTotal);
+      // 底池加注总额 = 当前注 + 跟注额 + (底池 + 跟注额)
+      const potRaiseTotal = g.currentBet + toCall + (g.pot + toCall);
+      quick('½底池', g.currentBet + toCall + Math.round((g.pot+toCall)/2));
+      quick('底池', potRaiseTotal);
       const rb=document.createElement('button'); rb.textContent=g.currentBet>0?'加注至':'下注'; rb.onclick=()=>submitAction('raise',+$('raiseval').value); ra.appendChild(rb);
     }
     const ai=document.createElement('button'); ai.className='neutral'; ai.textContent='全下 '+maxTotal; ai.onclick=()=>submitAction('raise',maxTotal); ra.appendChild(ai);
